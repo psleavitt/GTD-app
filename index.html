@@ -92,6 +92,21 @@ h1 .dot{color:var(--accent)}
   background:var(--card);color:var(--ink);box-shadow:var(--shadow);
 }
 .toggle button .glyph{margin-right:7px}
+.badge-dot{
+  display:inline-block;width:8px;height:8px;border-radius:50%;
+  background:var(--danger);margin-left:6px;vertical-align:middle;
+  opacity:0;transform:scale(0);transition:all .25s var(--ease);
+}
+.badge-dot.on{opacity:1;transform:scale(1)}
+
+.new-banner{
+  display:flex;align-items:center;gap:10px;
+  background:var(--accent-soft);color:var(--accent-deep);
+  border-radius:12px;padding:11px 14px;margin-bottom:14px;font-size:14px;font-weight:600;
+  cursor:pointer;animation:rise .3s var(--ease);
+}
+body[data-list="church"] .new-banner{color:var(--ink)}
+.new-banner .x{margin-left:auto;font-weight:400;color:var(--muted);font-size:18px;line-height:1}
 
 /* Quick add */
 .quickadd{
@@ -231,9 +246,11 @@ body[data-list="church"] .btn-go{color:#161E38}
   </header>
 
   <div class="toggle" role="tablist" aria-label="Choose list">
-    <button id="tabHome" role="tab" aria-selected="true" class="active"><span class="glyph">⌂</span>Household</button>
-    <button id="tabChurch" role="tab" aria-selected="false"><span class="glyph">✦</span>Church</button>
+    <button id="tabHome" role="tab" aria-selected="true" class="active"><span class="glyph">⌂</span>Household<span class="badge-dot" id="badgeHome"></span></button>
+    <button id="tabChurch" role="tab" aria-selected="false"><span class="glyph">✦</span>Church<span class="badge-dot" id="badgeChurch"></span></button>
   </div>
+
+  <div id="newBanner" class="new-banner" style="display:none"></div>
 
   <form class="quickadd" id="quickForm">
     <input id="quickInput" type="text" placeholder="Add a task…" autocomplete="off" aria-label="New task title">
@@ -245,16 +262,32 @@ body[data-list="church"] .btn-go{color:#161E38}
   <div id="completedArea"></div>
 </div>
 
+<div class="modal-bg" id="nameBg">
+  <div class="modal">
+    <h2>Welcome</h2>
+    <p>What should we call you on this device? It's how GTD tells you apart from whoever else is sharing this list.</p>
+    <input id="nameInput" type="text" placeholder="e.g. Parker" autocomplete="off">
+    <div class="row"><button class="btn-go" id="nameSave" style="width:100%">Continue</button></div>
+  </div>
+</div>
+
 <div class="modal-bg" id="modalBg">
   <div class="modal">
     <h2>Sync</h2>
-    <p>Enter your personal sync code to keep GTD in step across your devices. Same code, same lists, everywhere.</p>
+    <p>Enter your sync code to keep GTD in step across devices. Share the same code with your wife's phone so you both add to the same lists.</p>
     <input id="syncInput" type="text" placeholder="e.g. parker-gtd-2026" autocomplete="off">
+    <label style="font-size:12px;color:var(--muted);letter-spacing:.05em;text-transform:uppercase">Your name (shown when you add something)</label>
+    <input id="ownerInput" type="text" placeholder="e.g. Parker" autocomplete="off" style="margin-top:6px">
     <div class="row">
       <button class="btn-quiet" id="modalClose">Close</button>
       <button class="btn-go" id="modalSave">Connect</button>
     </div>
     <div class="sync-status" id="syncStatus"></div>
+    <p style="margin-top:16px">Notifications</p>
+    <div class="row">
+      <button class="btn-quiet" id="notifBtn" style="width:100%">Enable notifications</button>
+    </div>
+    <div class="sync-status" id="notifStatus"></div>
   </div>
 </div>
 
@@ -265,18 +298,38 @@ body[data-list="church"] .btn-go{color:#161E38}
 const SUPABASE_URL = "https://ctxnyfgdiugzhskumqpm.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImN0eG55ZmdkaXVnemhza3VtcXBtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODMxODUxNzgsImV4cCI6MjA5ODc2MTE3OH0.waXx4gHFKwRJWNloGRhIpe7TH5UVn1N_jPLgaAn2oEY";
 const TABLE = "gtd_data";
+const SUBS_TABLE = "gtd_push_subscriptions";
 const POLL_MS = 30000;
+const VAPID_PUBLIC_KEY = "BM0lND4T0JxX_LoQF9yKzkQT8zoUfdBjbrYEktvzXyWX7_kxkCckguAQGZYd3FuwcTaaTcMHZCtlUB60q7KFIB4";
+const NOTIFY_FN_URL = SUPABASE_URL + "/functions/v1/gtd-notify";
 
 /* ================= STATE ================= */
 const LS_KEY = "gtd_state_v1";
 const LS_LIST = "gtd_lastList";
 const LS_CODE = "gtd_syncCode";
+const LS_DEVICE = "gtd_deviceId";
+const LS_OWNER = "gtd_deviceOwner";
+const LS_SEEN = "gtd_lastSeen";
 
 let state = load() || { tasks: [], revision: 0 };
 let currentList = localStorage.getItem(LS_LIST) || "home";
 let expandedId = null;
 let completedOpen = false;
 let syncTimer = null, pushTimer = null, syncing = false;
+
+function deviceId(){
+  let id = localStorage.getItem(LS_DEVICE);
+  if (!id){ id = (crypto.randomUUID ? crypto.randomUUID() : uid()+uid()); localStorage.setItem(LS_DEVICE, id); }
+  return id;
+}
+function ownerName(){ return localStorage.getItem(LS_OWNER) || ""; }
+function lastSeen(){
+  try { return JSON.parse(localStorage.getItem(LS_SEEN)) || {}; } catch(e){ return {}; }
+}
+function markSeen(list){
+  const s = lastSeen(); s[list] = Date.now();
+  localStorage.setItem(LS_SEEN, JSON.stringify(s));
+}
 
 function load(){
   try { return JSON.parse(localStorage.getItem(LS_KEY)); } catch(e){ return null; }
@@ -323,8 +376,9 @@ const RECUR_LABEL = { daily:"Daily", weekly:"Weekly", biweekly:"Every 2 weeks", 
 
 /* ================= TASK OPS ================= */
 function addTask(title){
-  state.tasks.push({ id: uid(), list: currentList, title, notes: "", due: null, recur: null, done: false, createdAt: Date.now(), completedAt: null });
+  state.tasks.push({ id: uid(), list: currentList, title, notes: "", due: null, recur: null, done: false, createdAt: Date.now(), completedAt: null, addedBy: ownerName(), fromDevice: deviceId() });
   touch();
+  notifyPeers(currentList, title);
 }
 function toggleDone(id){
   const t = state.tasks.find(x => x.id === id);
@@ -359,6 +413,31 @@ const completedArea = document.getElementById("completedArea");
 
 function esc(s){ return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
 
+function unseenFor(list){
+  const seen = lastSeen();
+  if (!(list in seen)){ markSeen(list); return []; }
+  const seenAt = seen[list];
+  return state.tasks.filter(t => t.list === list && t.createdAt > seenAt && t.addedBy && t.addedBy !== ownerName());
+}
+function renderAwareness(){
+  const other = currentList === "home" ? "church" : "home";
+  document.getElementById("badgeHome").classList.toggle("on", currentList !== "home" && unseenFor("home").length > 0);
+  document.getElementById("badgeChurch").classList.toggle("on", currentList !== "church" && unseenFor("church").length > 0);
+
+  const mine = unseenFor(currentList);
+  const banner = document.getElementById("newBanner");
+  if (mine.length){
+    const names = [...new Set(mine.map(t => t.addedBy))];
+    const who = names.length === 1 ? names[0] : names.slice(0,-1).join(", ") + " and " + names[names.length-1];
+    const what = mine.length === 1 ? '"' + mine[0].title + '"' : mine.length + " items";
+    banner.innerHTML = who + " added " + what + '<span class="x">✕</span>';
+    banner.style.display = "flex";
+    banner.onclick = () => { markSeen(currentList); renderAwareness(); banner.style.display = "none"; };
+  } else {
+    banner.style.display = "none";
+  }
+}
+
 function render(){
   const active = state.tasks.filter(t => t.list === currentList && !t.done);
   const undated = active.filter(t => !t.due).sort((a,b) => b.createdAt - a.createdAt);
@@ -390,6 +469,7 @@ function render(){
     : "";
 
   bindRows();
+  renderAwareness();
 }
 
 function rowHTML(t){
@@ -558,21 +638,101 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden) pull
 const modalBg = document.getElementById("modalBg");
 document.getElementById("settingsBtn").onclick = () => {
   document.getElementById("syncInput").value = syncCode();
+  document.getElementById("ownerInput").value = ownerName();
   setSyncOk(!!syncCode());
+  refreshNotifStatus();
   modalBg.classList.add("show");
 };
 document.getElementById("modalClose").onclick = () => modalBg.classList.remove("show");
 modalBg.onclick = e => { if (e.target === modalBg) modalBg.classList.remove("show"); };
 document.getElementById("modalSave").onclick = () => {
   localStorage.setItem(LS_CODE, document.getElementById("syncInput").value.trim());
+  const nm = document.getElementById("ownerInput").value.trim();
+  if (nm) localStorage.setItem(LS_OWNER, nm);
   startPolling();
+  render();
   showToast(syncCode() ? "Sync connected" : "Sync disconnected");
   modalBg.classList.remove("show");
 };
 
+/* ================= NAME ONBOARDING ================= */
+const nameBg = document.getElementById("nameBg");
+if (!ownerName()) nameBg.classList.add("show");
+document.getElementById("nameSave").onclick = () => {
+  const v = document.getElementById("nameInput").value.trim();
+  if (!v) return;
+  localStorage.setItem(LS_OWNER, v);
+  nameBg.classList.remove("show");
+};
+
+/* ================= PUSH NOTIFICATIONS ================= */
+function urlB64ToUint8Array(base64String){
+  const padding = "=".repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/-/g,"+").replace(/_/g,"/");
+  const raw = atob(base64);
+  return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
+}
+function refreshNotifStatus(){
+  const s = document.getElementById("notifStatus");
+  const btn = document.getElementById("notifBtn");
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)){
+    s.textContent = "Push isn't supported in this browser.";
+    btn.disabled = true;
+    return;
+  }
+  if (Notification.permission === "granted"){
+    s.textContent = "Notifications are on for this device.";
+    btn.textContent = "Notifications enabled";
+  } else if (Notification.permission === "denied"){
+    s.textContent = "Blocked — enable notifications for GTD in your device Settings.";
+  } else {
+    s.textContent = "iOS: add GTD to your Home Screen first, then enable here.";
+  }
+}
+async function enablePush(){
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)){ return; }
+  try {
+    const reg = await navigator.serviceWorker.register("./sw.js");
+    const perm = await Notification.requestPermission();
+    if (perm !== "granted"){ refreshNotifStatus(); return; }
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub){
+      sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64ToUint8Array(VAPID_PUBLIC_KEY) });
+    }
+    if (syncCode()){
+      await fetch(SUPABASE_URL + "/rest/v1/" + SUBS_TABLE, {
+        method: "POST",
+        headers: { ...headers(), "Prefer": "resolution=merge-duplicates" },
+        body: JSON.stringify({ sync_code: syncCode(), device_id: deviceId(), owner_name: ownerName(), subscription: sub.toJSON(), updated_at: new Date().toISOString() })
+      });
+    }
+    showToast("Notifications enabled");
+  } catch(e){ /* leave status message as-is */ }
+  refreshNotifStatus();
+}
+document.getElementById("notifBtn").onclick = enablePush;
+
+async function notifyPeers(list, title){
+  if (!syncCode()) return;
+  try {
+    await fetch(NOTIFY_FN_URL, {
+      method: "POST",
+      headers: { ...headers() },
+      body: JSON.stringify({
+        sync_code: syncCode(),
+        sender_device_id: deviceId(),
+        title: list === "home" ? "New household task" : "New church task",
+        body: (ownerName() || "Someone") + " added: " + title,
+        list
+      })
+    });
+  } catch(e){ /* best-effort; in-app banner still covers it */ }
+}
+
 /* ================= INIT ================= */
 setList(currentList);
 startPolling();
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(()=>{});
 </script>
 </body>
 </html>

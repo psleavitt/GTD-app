@@ -141,7 +141,13 @@ body[data-list="church"] .quickadd button{color:#161E38}
   box-shadow:var(--shadow);cursor:pointer;
   transition:background .6s var(--ease),border-color .6s var(--ease);
   animation:rise .25s var(--ease);
+  border-left:3px solid transparent;
 }
+.task.urgent{
+  border-left:3px solid var(--accent);
+  padding-left:12px;
+}
+body[data-list="church"] .task.urgent{border-left-color:var(--accent-deep)}
 @keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 .checkbox{
   width:24px;height:24px;min-width:24px;border-radius:50%;
@@ -439,9 +445,11 @@ function renderAwareness(){
 }
 
 function render(){
+  const today = todayStr();
   const active = state.tasks.filter(t => t.list === currentList && !t.done);
+  const urgent = active.filter(t => t.due && t.due <= today).sort((a,b) => a.due < b.due ? -1 : a.due > b.due ? 1 : a.createdAt - b.createdAt);
   const undated = active.filter(t => !t.due).sort((a,b) => b.createdAt - a.createdAt);
-  const dated = active.filter(t => t.due).sort((a,b) => a.due < b.due ? -1 : a.due > b.due ? 1 : a.createdAt - b.createdAt);
+  const dated = active.filter(t => t.due && t.due > today).sort((a,b) => a.due < b.due ? -1 : a.due > b.due ? 1 : a.createdAt - b.createdAt);
   const done = state.tasks.filter(t => t.list === currentList && t.done).sort((a,b) => (b.completedAt||0) - (a.completedAt||0));
 
   let html = "";
@@ -451,6 +459,9 @@ function render(){
       : { big: "All is well.", small: "Add a task above when something needs doing." };
     html = '<div class="empty"><div class="big">' + msg.big + '</div>' + msg.small + '</div>';
   } else {
+    if (urgent.length){
+      html += '<div class="seclabel">Today</div>' + urgent.map(rowHTML).join("");
+    }
     if (undated.length){
       html += '<div class="seclabel">Anytime</div>' + undated.map(rowHTML).join("");
     }
@@ -474,15 +485,16 @@ function render(){
 
 function rowHTML(t){
   const today = todayStr();
+  const overdue = !t.done && t.due && t.due < today;
+  const urgent = !t.done && t.due && t.due <= today;
   let meta = "";
   if (t.due){
-    const overdue = !t.done && t.due < today;
     meta += '<span class="chip' + (overdue ? " overdue" : "") + '">' + (overdue ? "Overdue · " : "") + fmtDue(t.due) + '</span>';
   }
   if (t.recur) meta += '<span class="chip ghost">↻ ' + RECUR_LABEL[t.recur] + '</span>';
   const notePrev = (t.notes && expandedId !== t.id) ? '<div class="note-preview">' + esc(t.notes) + '</div>' : "";
   const editor = expandedId === t.id ? editorHTML(t) : "";
-  return '<div class="task' + (t.done ? " done" : "") + '" data-id="' + t.id + '">'
+  return '<div class="task' + (t.done ? " done" : "") + (urgent ? " urgent" : "") + '" data-id="' + t.id + '">'
     + '<button class="checkbox' + (t.done ? " checked" : "") + '" data-check="' + t.id + '" aria-label="' + (t.done ? "Mark incomplete" : "Mark complete") + '"></button>'
     + '<div class="task-main"><div class="task-title">' + esc(t.title) + '</div>'
     + (meta ? '<div class="task-meta">' + meta + '</div>' : "")
